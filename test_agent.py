@@ -16,8 +16,16 @@ import os
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+from google.genai import errors as genai_errors
 from google.genai import types
-from agent import BrowserAgent, multiply_numbers, extract_text, save_to_file
+from agent import (
+    AUTH_BILLING_ERROR_MESSAGE,
+    BrowserAgent,
+    SAFETY_BLOCK_MESSAGE,
+    extract_text,
+    multiply_numbers,
+    save_to_file,
+)
 from computers import EnvState
 from prompts import CONCISE_SYSTEM_INSTRUCTION
 
@@ -108,9 +116,10 @@ class TestBrowserAgent(unittest.TestCase):
         mock_handle_action.assert_called_once_with(function_call, False)
         self.assertEqual(len(self.agent._contents), 3)
 
+    @patch("termcolor.cprint")
     @patch("agent.BrowserAgent.get_model_response")
     def test_run_one_iteration_safety_block_no_attribute_error(
-        self, mock_get_model_response
+        self, mock_get_model_response, mock_cprint
     ):
         mock_response = MagicMock()
         mock_response.candidates = []
@@ -118,10 +127,82 @@ class TestBrowserAgent(unittest.TestCase):
         mock_response.prompt_feedback.block_reason = types.BlockedReason.SAFETY
         mock_get_model_response.return_value = mock_response
 
-        with self.assertRaises(ValueError) as ctx:
-            self.agent.run_one_iteration()
+        result = self.agent.run_one_iteration()
 
-        self.assertIn("safety", str(ctx.exception).lower())
+        self.assertEqual(result, "COMPLETE")
+        mock_cprint.assert_called_once_with(
+            SAFETY_BLOCK_MESSAGE, color="yellow", attrs=["bold"]
+        )
+
+    @patch("agent.BrowserAgent.get_model_response")
+    def test_agent_loop_safety_block_exits_gracefully(self, mock_get_model_response):
+        mock_response = MagicMock()
+        mock_response.candidates = []
+        mock_response.prompt_feedback = MagicMock()
+        mock_response.prompt_feedback.block_reason = types.BlockedReason.SAFETY
+        mock_get_model_response.return_value = mock_response
+
+        self.agent.agent_loop()
+
+        mock_get_model_response.assert_called_once()
+
+    @patch("agent.time.sleep")
+    def test_get_model_response_401_fails_fast(self, mock_sleep):
+        auth_error = genai_errors.ClientError(
+            401, {"error": {"message": "Unauthorized"}}
+        )
+        self.agent._client.models.generate_content.side_effect = auth_error
+
+        with self.assertRaises(genai_errors.ClientError):
+            self.agent.get_model_response()
+
+        self.agent._client.models.generate_content.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    @patch("agent.time.sleep")
+    def test_get_model_response_403_fails_fast(self, mock_sleep):
+        billing_error = genai_errors.ClientError(
+            403, {"error": {"message": "Forbidden"}}
+        )
+        self.agent._client.models.generate_content.side_effect = billing_error
+
+        with self.assertRaises(genai_errors.ClientError):
+            self.agent.get_model_response()
+
+        self.agent._client.models.generate_content.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    @patch("termcolor.cprint")
+    @patch("agent.time.sleep")
+    def test_get_model_response_401_prints_auth_message(self, mock_sleep, mock_cprint):
+        auth_error = genai_errors.ClientError(
+            401, {"error": {"message": "Unauthorized"}}
+        )
+        self.agent._client.models.generate_content.side_effect = auth_error
+
+        with self.assertRaises(genai_errors.ClientError):
+            self.agent.get_model_response()
+
+        mock_cprint.assert_called_once_with(
+            AUTH_BILLING_ERROR_MESSAGE, color="red", attrs=["bold"]
+        )
+
+    @patch("agent.time.sleep")
+    def test_get_model_response_500_retries(self, mock_sleep):
+        server_error = genai_errors.ServerError(
+            500, {"error": {"message": "Internal Server Error"}}
+        )
+        mock_response = MagicMock()
+        self.agent._client.models.generate_content.side_effect = [
+            server_error,
+            mock_response,
+        ]
+
+        result = self.agent.get_model_response()
+
+        self.assertEqual(result, mock_response)
+        self.assertEqual(self.agent._client.models.generate_content.call_count, 2)
+        mock_sleep.assert_called_once_with(1)
 
     @patch("agent.BrowserAgent.get_model_response")
     def test_run_one_iteration_other_block_reason_no_attribute_error(

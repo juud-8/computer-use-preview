@@ -14,6 +14,7 @@
 import os
 from typing import Literal, Optional, Union, Any
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 import termcolor
 from google.genai.types import (
@@ -81,6 +82,19 @@ PREDEFINED_COMPUTER_USE_FUNCTIONS = [
 
 
 console = Console()
+
+SAFETY_BLOCK_MESSAGE = (
+    "The model declined this request (safety filter). "
+    "Try rephrasing the query or a different page."
+)
+AUTH_BILLING_ERROR_MESSAGE = (
+    "API auth/billing error — check your GEMINI_API_KEY and Google AI billing status"
+)
+
+
+def _is_non_retryable_auth_error(exc: Exception) -> bool:
+    return isinstance(exc, genai_errors.ClientError) and exc.code in (401, 403)
+
 
 # Built-in Computer Use tools will return "EnvState".
 # Custom provided functions will return "dict".
@@ -431,6 +445,11 @@ class BrowserAgent:
                 )
                 return response  # Return response on success
             except Exception as e:
+                if _is_non_retryable_auth_error(e):
+                    termcolor.cprint(
+                        AUTH_BILLING_ERROR_MESSAGE, color="red", attrs=["bold"]
+                    )
+                    raise
                 print(e)
                 if attempt < max_retries - 1:
                     delay = base_delay_s * (2**attempt)
@@ -493,9 +512,10 @@ class BrowserAgent:
                 else None
             )
             if block_reason == types.BlockedReason.SAFETY:
-                raise ValueError(
-                    f"Response was blocked due to safety. Feedback: {response.prompt_feedback}"
+                termcolor.cprint(
+                    SAFETY_BLOCK_MESSAGE, color="yellow", attrs=["bold"]
                 )
+                return "COMPLETE"
             print("Response has no candidates!")
             print(response)
             raise ValueError("Empty response")
