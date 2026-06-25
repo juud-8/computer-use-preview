@@ -17,7 +17,13 @@ import os
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
-from config import DEFAULT_INITIAL_URL, DEFAULT_MODEL, MAX_STEPS, verbose_reasoning
+from config import (
+    DEFAULT_INITIAL_URL,
+    DEFAULT_MODEL,
+    MAX_STEPS,
+    concise_mode,
+    verbose_reasoning,
+)
 from agent import BrowserAgent
 from computers import BrowserbaseComputer, PlaywrightComputer
 
@@ -80,6 +86,7 @@ def main() -> int:
             query=args.query,
             model_name=args.model,
             verbose=verbose_reasoning(),
+            concise_mode=concise_mode(),
         )
         agent.agent_loop(max_steps=MAX_STEPS)
     return 0

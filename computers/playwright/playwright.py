@@ -72,6 +72,10 @@ PLAYWRIGHT_KEY_MAP = {
 }
 
 
+def _sanitize_url(url: str) -> str:
+    return url.strip().rstrip(")],.")
+
+
 class PlaywrightComputer(Computer):
     """Connects to a local Playwright instance."""
 
@@ -316,11 +320,14 @@ class PlaywrightComputer(Computer):
         return self.navigate(self._search_engine_url)
 
     def navigate(self, url: str) -> EnvState:
-        normalized_url = url
+        normalized_url = _sanitize_url(url)
         if not normalized_url.startswith(("http://", "https://")):
             normalized_url = "https://" + normalized_url
-        self._page.goto(normalized_url)
-        self._page.wait_for_load_state()
+        try:
+            self._page.goto(normalized_url)
+            self._page.wait_for_load_state()
+        except Exception as e:
+            logging.warning("Navigate failed for %r: %s", normalized_url, e)
         return self.current_state()
 
     def key_combination(self, keys: list[str]) -> EnvState:

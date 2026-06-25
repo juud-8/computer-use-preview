@@ -29,6 +29,7 @@ from rich.console import Console
 from rich.table import Table
 
 from computers import EnvState, Computer
+from prompts import get_system_instruction
 
 MAX_RECENT_TURN_WITH_SCREENSHOTS = 3
 LEGACY_COMPUTER_USE_MODELS = [
@@ -98,6 +99,7 @@ class BrowserAgent:
         query: str,
         model_name: str,
         verbose: bool = True,
+        concise_mode: bool = False,
     ):
         self._browser_computer = browser_computer
         self._query = query
@@ -136,12 +138,13 @@ class BrowserAgent:
             )
         ]
 
-        self._generate_content_config = GenerateContentConfig(
-            temperature=1,
-            top_p=0.95,
-            top_k=40,
-            max_output_tokens=8192,
-            tools=[
+        system_instruction = get_system_instruction(concise_mode)
+        config_kwargs = {
+            "temperature": 1,
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_output_tokens": 8192,
+            "tools": [
                 types.Tool(
                     computer_use=types.ComputerUse(
                         environment=types.Environment.ENVIRONMENT_BROWSER,
@@ -150,8 +153,11 @@ class BrowserAgent:
                 ),
                 types.Tool(function_declarations=custom_functions),
             ],
-            thinking_config=types.ThinkingConfig(include_thoughts=True),
-        )
+            "thinking_config": types.ThinkingConfig(include_thoughts=True),
+        }
+        if system_instruction is not None:
+            config_kwargs["system_instruction"] = system_instruction
+        self._generate_content_config = GenerateContentConfig(**config_kwargs)
 
     def handle_action(
         self, action: types.FunctionCall, use_legacy_actions: bool

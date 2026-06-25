@@ -25,3 +25,10 @@ def verbose_reasoning() -> bool:
     if val is None:
         return True
     return val.lower() in ("true", "1", "yes")
+
+
+def concise_mode() -> bool:
+    val = os.environ.get("CONCISE_MODE")
+    if val is None:
+        return False
+    return val.lower() in ("true", "1", "yes")

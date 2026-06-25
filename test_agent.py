@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 from google.genai import types
 from agent import BrowserAgent, multiply_numbers
 from computers import EnvState
+from prompts import CONCISE_SYSTEM_INSTRUCTION
 
 class TestBrowserAgent(unittest.TestCase):
     def setUp(self):
@@ -112,6 +113,22 @@ class TestBrowserAgent(unittest.TestCase):
         ) as mock_iter:
             self.agent.agent_loop(max_steps=3)
         self.assertEqual(mock_iter.call_count, 3)
+
+    def test_default_no_system_instruction(self):
+        self.assertIsNone(self.agent._generate_content_config.system_instruction)
+
+    def test_concise_mode_sets_system_instruction(self):
+        agent = BrowserAgent(
+            browser_computer=self.mock_browser_computer,
+            query="test query",
+            model_name="test_model",
+            concise_mode=True,
+        )
+        agent._client = MagicMock()
+        self.assertEqual(
+            agent._generate_content_config.system_instruction,
+            CONCISE_SYSTEM_INSTRUCTION,
+        )
 
 
 if __name__ == "__main__":
