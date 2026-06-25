@@ -31,6 +31,7 @@ from rich.table import Table
 
 from computers import EnvState, Computer
 from prompts import build_initial_user_message, get_system_instruction
+from run_log import RunLogger
 
 MAX_RECENT_TURN_WITH_SCREENSHOTS = 3
 LEGACY_COMPUTER_USE_MODELS = [
@@ -145,11 +146,13 @@ class BrowserAgent:
         model_name: str,
         verbose: bool = True,
         concise_mode: bool = False,
+        run_logger: RunLogger | None = None,
     ):
         self._browser_computer = browser_computer
         self._query = query
         self._model_name = model_name
         self._verbose = verbose
+        self._run_logger = run_logger
         self.final_reasoning = None
         use_vertexai = os.environ.get("USE_VERTEXAI", "0").lower() in ["true", "1"]
         if use_vertexai:
@@ -607,6 +610,17 @@ class BrowserAgent:
                     FunctionResponse(name=function_call.name, response=fc_result)
                 )
 
+            if self._run_logger:
+                resulting_url = (
+                    fc_result.url if isinstance(fc_result, EnvState) else None
+                )
+                self._run_logger.write_step(
+                    action_name=function_call.name,
+                    action_args=dict(function_call.args or {}),
+                    reasoning_text=reasoning,
+                    resulting_url=resulting_url,
+                )
+
         self._contents.append(
             Content(
                 role="user",
@@ -664,18 +678,22 @@ class BrowserAgent:
         return "CONTINUE"
 
     def agent_loop(self, max_steps: int | None = None):
-        status = "CONTINUE"
-        step = 0
-        while status == "CONTINUE":
-            if max_steps is not None and step >= max_steps:
-                termcolor.cprint(
-                    f"Agent loop stopped: reached MAX_STEPS limit ({max_steps}).",
-                    color="yellow",
-                    attrs=["bold"],
-                )
-                return
-            status = self.run_one_iteration()
-            step += 1
+        try:
+            status = "CONTINUE"
+            step = 0
+            while status == "CONTINUE":
+                if max_steps is not None and step >= max_steps:
+                    termcolor.cprint(
+                        f"Agent loop stopped: reached MAX_STEPS limit ({max_steps}).",
+                        color="yellow",
+                        attrs=["bold"],
+                    )
+                    return
+                status = self.run_one_iteration()
+                step += 1
+        finally:
+            if self._run_logger:
+                self._run_logger.close()
 
     def denormalize_x(self, x: int) -> int:
         return int(x / 1000 * self._browser_computer.screen_size()[0])

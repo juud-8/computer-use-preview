@@ -1,0 +1,17 @@
+repo_summary:
+  description: Summarize main functions in a GitHub file from its raw contents
+  query: "Summarize how the main functions in this file work, based only on its contents."
+  initial_url: "{url}"
+  concise_mode: true
+
+competitor_scan:
+  description: List today's top Product Hunt launches
+  query: "List today's top 5 products and one line on what each does."
+  initial_url: "https://www.producthunt.com"
+  concise_mode: true
+
+price_check:
+  description: Extract price and availability from a product page
+  query: "Extract the current price and availability of this product."
+  initial_url: "{url}"
+  concise_mode: true

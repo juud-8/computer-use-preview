@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import json
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -28,6 +29,7 @@ from agent import (
 )
 from computers import EnvState
 from prompts import CONCISE_SYSTEM_INSTRUCTION
+from run_log import RunLogger
 
 class TestBrowserAgent(unittest.TestCase):
     def setUp(self):
@@ -275,6 +277,119 @@ class TestBrowserAgent(unittest.TestCase):
         result = save_to_file("../outside.txt", "bad")
         self.assertIn("error", result)
         self.assertIn("escapes", result["error"])
+
+    @patch("agent.BrowserAgent.handle_action")
+    @patch("agent.BrowserAgent.get_model_response")
+    def test_agent_loop_writes_jsonl_meta_and_steps(
+        self, mock_get_model_response, mock_handle_action
+    ):
+        fc_response = MagicMock()
+        fc_candidate = MagicMock()
+        function_call = types.FunctionCall(
+            name="navigate", args={"url": "https://example.com"}
+        )
+        fc_candidate.content.parts = [
+            types.Part(text="Opening the page"),
+            types.Part(function_call=function_call),
+        ]
+        fc_response.candidates = [fc_candidate]
+
+        complete_response = MagicMock()
+        complete_candidate = MagicMock()
+        complete_candidate.content.parts = [
+            types.Part(text="Done navigating")
+        ]
+        complete_response.candidates = [complete_candidate]
+
+        mock_get_model_response.side_effect = [fc_response, complete_response]
+        mock_handle_action.return_value = EnvState(
+            screenshot=b"screenshot-bytes", url="https://example.com"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = os.path.join(tmpdir, "run.jsonl")
+            run_logger = RunLogger(log_path)
+            run_logger.write_meta(
+                query="test query",
+                initial_url="https://start.example",
+                model="test_model",
+                concise_mode=False,
+                max_steps=5,
+            )
+            self.agent._run_logger = run_logger
+
+            self.agent.agent_loop(max_steps=5)
+
+            with open(log_path, encoding="utf-8") as f:
+                records = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(len(records), 2)
+        meta = records[0]
+        self.assertEqual(meta["type"], "meta")
+        self.assertEqual(meta["query"], "test query")
+        self.assertEqual(meta["initial_url"], "https://start.example")
+        self.assertEqual(meta["model"], "test_model")
+        self.assertFalse(meta["concise_mode"])
+        self.assertEqual(meta["max_steps"], 5)
+
+        step = records[1]
+        self.assertEqual(step["type"], "step")
+        self.assertEqual(step["step_number"], 1)
+        self.assertEqual(step["action_name"], "navigate")
+        self.assertEqual(step["action_args"], {"url": "https://example.com"})
+        self.assertEqual(step["reasoning_text"], "Opening the page")
+        self.assertEqual(step["resulting_url"], "https://example.com")
+
+    @patch("agent.BrowserAgent.handle_action")
+    @patch("agent.BrowserAgent.get_model_response")
+    def test_jsonl_never_contains_screenshot_data(
+        self, mock_get_model_response, mock_handle_action
+    ):
+        fc_response = MagicMock()
+        fc_candidate = MagicMock()
+        function_call = types.FunctionCall(name="click", args={"x": 100, "y": 200})
+        fc_candidate.content.parts = [
+            types.Part(text="Clicking"),
+            types.Part(function_call=function_call),
+        ]
+        fc_response.candidates = [fc_candidate]
+
+        complete_response = MagicMock()
+        complete_candidate = MagicMock()
+        complete_candidate.content.parts = [types.Part(text="Done")]
+        complete_response.candidates = [complete_candidate]
+
+        mock_get_model_response.side_effect = [fc_response, complete_response]
+        screenshot_bytes = b"\x89PNGfakebytes"
+        mock_handle_action.return_value = EnvState(
+            screenshot=screenshot_bytes, url="https://x.com"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = os.path.join(tmpdir, "run.jsonl")
+            run_logger = RunLogger(log_path)
+            run_logger.write_meta(
+                query="test query",
+                initial_url="https://example.com",
+                model="test_model",
+                concise_mode=False,
+                max_steps=5,
+            )
+            self.agent._run_logger = run_logger
+
+            self.agent.agent_loop(max_steps=5)
+
+            with open(log_path, encoding="utf-8") as f:
+                raw = f.read()
+                records = [json.loads(line) for line in raw.splitlines() if line]
+
+        self.assertNotIn("screenshot", raw)
+        self.assertNotIn("inline_data", raw)
+        self.assertNotIn("image/png", raw)
+        self.assertNotIn(screenshot_bytes.decode("latin-1"), raw)
+        step = records[1]
+        self.assertEqual(step["resulting_url"], "https://x.com")
+        self.assertNotIn("screenshot", step)
 
 
 if __name__ == "__main__":

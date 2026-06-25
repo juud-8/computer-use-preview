@@ -6,3 +6,4 @@ browserbase==1.4.0
 rich
 pytest
 python-dotenv==1.0.1
+PyYAML>=6.0
