@@ -29,7 +29,7 @@ from rich.console import Console
 from rich.table import Table
 
 from computers import EnvState, Computer
-from prompts import get_system_instruction
+from prompts import build_initial_user_message, get_system_instruction
 
 MAX_RECENT_TURN_WITH_SCREENSHOTS = 3
 LEGACY_COMPUTER_USE_MODELS = [
@@ -150,7 +150,7 @@ class BrowserAgent:
             Content(
                 role="user",
                 parts=[
-                    Part(text=self._query),
+                    Part(text=build_initial_user_message(self._query, concise_mode)),
                 ],
             )
         ]
@@ -176,6 +176,11 @@ class BrowserAgent:
         ]
 
         system_instruction = get_system_instruction(concise_mode)
+        print(
+            f"[debug] concise_mode={concise_mode} "
+            f"system_instruction={'CONCISE' if system_instruction else 'None'} "
+            f"delivery={'injected user message' if concise_mode else 'none'}"
+        )
         config_kwargs = {
             "temperature": 1,
             "top_p": 0.95,
@@ -190,10 +195,11 @@ class BrowserAgent:
                 ),
                 types.Tool(function_declarations=custom_functions),
             ],
-            "thinking_config": types.ThinkingConfig(include_thoughts=True),
+            # Concise mode skips thought parts in the response to cut token cost.
+            "thinking_config": types.ThinkingConfig(
+                include_thoughts=not concise_mode
+            ),
         }
-        if system_instruction is not None:
-            config_kwargs["system_instruction"] = system_instruction
         self._generate_content_config = GenerateContentConfig(**config_kwargs)
 
     def handle_action(
@@ -450,7 +456,7 @@ class BrowserAgent:
             return None
         text = []
         for part in candidate.content.parts:
-            if part.text:
+            if part.text and not part.thought:
                 text.append(part.text)
         return " ".join(text) or None
 

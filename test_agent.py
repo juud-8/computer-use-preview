@@ -147,8 +147,12 @@ class TestBrowserAgent(unittest.TestCase):
 
     def test_default_no_system_instruction(self):
         self.assertIsNone(self.agent._generate_content_config.system_instruction)
+        self.assertEqual(
+            self.agent._contents[0].parts[0].text,
+            "test query",
+        )
 
-    def test_concise_mode_sets_system_instruction(self):
+    def test_concise_mode_injects_instruction_into_first_user_message(self):
         agent = BrowserAgent(
             browser_computer=self.mock_browser_computer,
             query="test query",
@@ -156,9 +160,13 @@ class TestBrowserAgent(unittest.TestCase):
             concise_mode=True,
         )
         agent._client = MagicMock()
+        self.assertIsNone(agent._generate_content_config.system_instruction)
         self.assertEqual(
-            agent._generate_content_config.system_instruction,
-            CONCISE_SYSTEM_INSTRUCTION,
+            agent._contents[0].parts[0].text,
+            f"{CONCISE_SYSTEM_INSTRUCTION}\n\ntest query",
+        )
+        self.assertFalse(
+            agent._generate_content_config.thinking_config.include_thoughts
         )
 
     def test_handle_action_extract_text(self):

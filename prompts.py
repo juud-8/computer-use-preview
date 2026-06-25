@@ -14,8 +14,9 @@
 
 CONCISE_SYSTEM_INSTRUCTION = """You are a browser automation agent. Be direct and efficient.
 
+Output at most one short sentence of reasoning per step. Do not write essays, headings, or multi-paragraph analysis. Act, don't narrate.
+
 Reasoning rules:
-- At most one short sentence of reasoning per step.
 - No theatrical narration, no meta-commentary, no deliberation — act immediately.
 - Prefer the next concrete browser action over explaining what you might do.
 
@@ -27,3 +28,15 @@ def get_system_instruction(concise_mode: bool) -> str | None:
     if concise_mode:
         return CONCISE_SYSTEM_INSTRUCTION
     return None
+
+
+def build_initial_user_message(query: str, concise_mode: bool) -> str:
+    """Prefix the task with concise instructions when computer_use is enabled.
+
+    Computer-use models may ignore GenerateContentConfig.system_instruction when
+    the computer_use tool is attached, so concise mode injects the instruction
+    into the first user turn instead.
+    """
+    if concise_mode:
+        return f"{CONCISE_SYSTEM_INSTRUCTION}\n\n{query}"
+    return query
