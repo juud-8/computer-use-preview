@@ -40,7 +40,9 @@ class TestMain(unittest.TestCase):
             highlight_mouse=True
         )
         mock_browser_agent.assert_called_once()
-        mock_browser_agent.return_value.agent_loop.assert_called_once()
+        mock_browser_agent.return_value.agent_loop.assert_called_once_with(
+            max_steps=main.MAX_STEPS
+        )
 
     @patch('main.argparse.ArgumentParser')
     @patch('main.BrowserbaseComputer')
@@ -63,7 +65,9 @@ class TestMain(unittest.TestCase):
             initial_url='test_url'
         )
         mock_browser_agent.assert_called_once()
-        mock_browser_agent.return_value.agent_loop.assert_called_once()
+        mock_browser_agent.return_value.agent_loop.assert_called_once_with(
+            max_steps=main.MAX_STEPS
+        )
 
 if __name__ == '__main__':
     unittest.main()

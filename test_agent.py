@@ -106,6 +106,13 @@ class TestBrowserAgent(unittest.TestCase):
         mock_handle_action.assert_called_once_with(function_call, False)
         self.assertEqual(len(self.agent._contents), 3)
 
+    def test_agent_loop_max_steps(self):
+        with patch.object(
+            self.agent, "run_one_iteration", return_value="CONTINUE"
+        ) as mock_iter:
+            self.agent.agent_loop(max_steps=3)
+        self.assertEqual(mock_iter.call_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

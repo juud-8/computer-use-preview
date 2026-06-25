@@ -104,12 +104,15 @@ class BrowserAgent:
         self._model_name = model_name
         self._verbose = verbose
         self.final_reasoning = None
-        self._client = genai.Client(
-            api_key=os.environ.get("GEMINI_API_KEY"),
-            vertexai=os.environ.get("USE_VERTEXAI", "0").lower() in ["true", "1"],
-            project=os.environ.get("VERTEXAI_PROJECT"),
-            location=os.environ.get("VERTEXAI_LOCATION"),
-        )
+        use_vertexai = os.environ.get("USE_VERTEXAI", "0").lower() in ["true", "1"]
+        if use_vertexai:
+            self._client = genai.Client(
+                vertexai=True,
+                project=os.environ.get("VERTEXAI_PROJECT"),
+                location=os.environ.get("VERTEXAI_LOCATION"),
+            )
+        else:
+            self._client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         self._contents: list[Content] = [
             Content(
                 role="user",
@@ -573,10 +576,19 @@ class BrowserAgent:
             return "TERMINATE"
         return "CONTINUE"
 
-    def agent_loop(self):
+    def agent_loop(self, max_steps: int | None = None):
         status = "CONTINUE"
+        step = 0
         while status == "CONTINUE":
+            if max_steps is not None and step >= max_steps:
+                termcolor.cprint(
+                    f"Agent loop stopped: reached MAX_STEPS limit ({max_steps}).",
+                    color="yellow",
+                    attrs=["bold"],
+                )
+                return
             status = self.run_one_iteration()
+            step += 1
 
     def denormalize_x(self, x: int) -> int:
         return int(x / 1000 * self._browser_computer.screen_size()[0])

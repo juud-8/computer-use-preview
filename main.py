@@ -17,6 +17,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
+from config import DEFAULT_INITIAL_URL, DEFAULT_MODEL, MAX_STEPS, verbose_reasoning
 from agent import BrowserAgent
 from computers import BrowserbaseComputer, PlaywrightComputer
 
@@ -43,7 +44,7 @@ def main() -> int:
     parser.add_argument(
         "--initial_url",
         type=str,
-        default="https://www.google.com",
+        default=DEFAULT_INITIAL_URL,
         help="The inital URL loaded for the computer.",
     )
     parser.add_argument(
@@ -54,7 +55,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--model",
-        default='gemini-3.5-flash',
+        default=DEFAULT_MODEL,
         help="Set which main model to use.",
     )
     args = parser.parse_args()
@@ -78,8 +79,9 @@ def main() -> int:
             browser_computer=browser_computer,
             query=args.query,
             model_name=args.model,
+            verbose=verbose_reasoning(),
         )
-        agent.agent_loop()
+        agent.agent_loop(max_steps=MAX_STEPS)
     return 0
 
 
