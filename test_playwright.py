@@ -54,6 +54,7 @@ class TestTruncateText(unittest.TestCase):
     def test_truncates_long_text(self):
         text = "x" * (EXTRACT_TEXT_MAX_CHARS + 100)
         result = _truncate_text(text)
+        self.assertEqual(result[:EXTRACT_TEXT_MAX_CHARS], "x" * EXTRACT_TEXT_MAX_CHARS)
         self.assertIn("...[truncated,", result)
         self.assertIn(f"{len(text)} chars total]", result)
 

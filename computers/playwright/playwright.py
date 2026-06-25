@@ -77,7 +77,7 @@ def _sanitize_url(url: str) -> str:
     return url.strip().rstrip(")],.")
 
 
-EXTRACT_TEXT_MAX_CHARS = 8000
+EXTRACT_TEXT_MAX_CHARS = 50000
 
 
 def _truncate_text(text: str, max_chars: int = EXTRACT_TEXT_MAX_CHARS) -> str:
