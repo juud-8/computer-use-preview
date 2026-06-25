@@ -16,6 +16,7 @@ import termcolor
 import time
 import os
 import sys
+import urllib.request
 from ..computer import (
     Computer,
     EnvState,
@@ -74,6 +75,29 @@ PLAYWRIGHT_KEY_MAP = {
 
 def _sanitize_url(url: str) -> str:
     return url.strip().rstrip(")],.")
+
+
+EXTRACT_TEXT_MAX_CHARS = 8000
+
+
+def _truncate_text(text: str, max_chars: int = EXTRACT_TEXT_MAX_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n...[truncated, {len(text)} chars total]"
+
+
+def _github_blob_to_raw_url(url: str) -> str | None:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.netloc not in ("github.com", "www.github.com"):
+        return None
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) < 5 or parts[2] != "blob":
+        return None
+    user, repo, branch = parts[0], parts[1], parts[3]
+    file_path = "/".join(parts[4:])
+    return f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{file_path}"
 
 
 class PlaywrightComputer(Computer):
@@ -307,8 +331,11 @@ class PlaywrightComputer(Computer):
         return self.current_state()
 
     def go_back(self) -> EnvState:
-        self._page.go_back()
-        self._page.wait_for_load_state()
+        try:
+            self._page.go_back()
+            self._page.wait_for_load_state()
+        except Exception as e:
+            logging.warning("Go back failed: %s", e)
         return self.current_state()
 
     def go_forward(self) -> EnvState:
@@ -329,6 +356,21 @@ class PlaywrightComputer(Computer):
         except Exception as e:
             logging.warning("Navigate failed for %r: %s", normalized_url, e)
         return self.current_state()
+
+    def extract_text(self, selector: str | None = None) -> dict:
+        raw_url = _github_blob_to_raw_url(self._page.url)
+        if raw_url:
+            try:
+                with urllib.request.urlopen(raw_url, timeout=30) as resp:
+                    text = resp.read().decode("utf-8", errors="replace")
+            except Exception as e:
+                logging.warning("GitHub raw fetch failed for %r: %s", raw_url, e)
+                return {"text": "", "error": f"Failed to fetch raw content: {e}"}
+        elif selector:
+            text = self._page.inner_text(selector)
+        else:
+            text = self._page.inner_text("body")
+        return {"text": _truncate_text(text)}
 
     def key_combination(self, keys: list[str]) -> EnvState:
         # Normalize all keys to the Playwright compatible version.

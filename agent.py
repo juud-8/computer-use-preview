@@ -92,6 +92,37 @@ def multiply_numbers(x: float, y: float) -> dict:
     return {"result": x * y}
 
 
+OUTPUTS_DIR = "outputs"
+
+
+def extract_text(selector: str | None = None) -> dict:
+    """Return visible text from the current page, optionally scoped to a CSS selector."""
+    raise NotImplementedError("Routed through BrowserAgent to the browser computer.")
+
+
+def _resolve_output_path(path: str) -> str:
+    base = os.path.abspath(OUTPUTS_DIR)
+    os.makedirs(base, exist_ok=True)
+    resolved = os.path.abspath(os.path.join(base, path))
+    if resolved != base and not resolved.startswith(base + os.sep):
+        raise ValueError(f"Path escapes ./{OUTPUTS_DIR}/: {path!r}")
+    return resolved
+
+
+def save_to_file(path: str, content: str) -> dict:
+    """Write content to a file under ./outputs/ and return the saved path."""
+    try:
+        resolved = _resolve_output_path(path)
+    except ValueError as e:
+        return {"error": str(e)}
+    parent = os.path.dirname(resolved)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(resolved, "w", encoding="utf-8") as f:
+        f.write(content)
+    return {"result": f"Saved to {resolved}"}
+
+
 class BrowserAgent:
     def __init__(
         self,
@@ -135,7 +166,13 @@ class BrowserAgent:
             # For example:
             types.FunctionDeclaration.from_callable(
                 client=self._client, callable=multiply_numbers
-            )
+            ),
+            types.FunctionDeclaration.from_callable(
+                client=self._client, callable=extract_text
+            ),
+            types.FunctionDeclaration.from_callable(
+                client=self._client, callable=save_to_file
+            ),
         ]
 
         system_instruction = get_system_instruction(concise_mode)
@@ -278,6 +315,14 @@ class BrowserAgent:
         # Handle the custom function declarations here.
         elif action.name == multiply_numbers.__name__:
             return multiply_numbers(x=action.args["x"], y=action.args["y"])
+        elif action.name == extract_text.__name__:
+            return self._browser_computer.extract_text(
+                action.args.get("selector")
+            )
+        elif action.name == save_to_file.__name__:
+            return save_to_file(
+                path=action.args["path"], content=action.args["content"]
+            )
         else:
             raise ValueError(f"Unsupported function: {action}")
 
@@ -357,6 +402,14 @@ class BrowserAgent:
         # Handle the custom function declarations here.
         elif action.name == multiply_numbers.__name__:
             return multiply_numbers(x=action.args["x"], y=action.args["y"])
+        elif action.name == extract_text.__name__:
+            return self._browser_computer.extract_text(
+                action.args.get("selector")
+            )
+        elif action.name == save_to_file.__name__:
+            return save_to_file(
+                path=action.args["path"], content=action.args["content"]
+            )
         else:
             raise ValueError(f"Unsupported function: {action}")
 
@@ -428,10 +481,12 @@ class BrowserAgent:
                 return "COMPLETE"
 
         if not response.candidates:
-            if (
-                response.prompt_feedback
-                and response.prompt_feedback.block_reason == types.BlockReason.SAFETY
-            ):
+            block_reason = (
+                response.prompt_feedback.block_reason
+                if response.prompt_feedback
+                else None
+            )
+            if block_reason == types.BlockedReason.SAFETY:
                 raise ValueError(
                     f"Response was blocked due to safety. Feedback: {response.prompt_feedback}"
                 )

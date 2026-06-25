@@ -13,10 +13,11 @@
 # limitations under the License.
 
 import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 from google.genai import types
-from agent import BrowserAgent, multiply_numbers
+from agent import BrowserAgent, multiply_numbers, extract_text, save_to_file
 from computers import EnvState
 from prompts import CONCISE_SYSTEM_INSTRUCTION
 
@@ -107,6 +108,36 @@ class TestBrowserAgent(unittest.TestCase):
         mock_handle_action.assert_called_once_with(function_call, False)
         self.assertEqual(len(self.agent._contents), 3)
 
+    @patch("agent.BrowserAgent.get_model_response")
+    def test_run_one_iteration_safety_block_no_attribute_error(
+        self, mock_get_model_response
+    ):
+        mock_response = MagicMock()
+        mock_response.candidates = []
+        mock_response.prompt_feedback = MagicMock()
+        mock_response.prompt_feedback.block_reason = types.BlockedReason.SAFETY
+        mock_get_model_response.return_value = mock_response
+
+        with self.assertRaises(ValueError) as ctx:
+            self.agent.run_one_iteration()
+
+        self.assertIn("safety", str(ctx.exception).lower())
+
+    @patch("agent.BrowserAgent.get_model_response")
+    def test_run_one_iteration_other_block_reason_no_attribute_error(
+        self, mock_get_model_response
+    ):
+        mock_response = MagicMock()
+        mock_response.candidates = []
+        mock_response.prompt_feedback = MagicMock()
+        mock_response.prompt_feedback.block_reason = types.BlockedReason.OTHER
+        mock_get_model_response.return_value = mock_response
+
+        with self.assertRaises(ValueError) as ctx:
+            self.agent.run_one_iteration()
+
+        self.assertIn("Empty response", str(ctx.exception))
+
     def test_agent_loop_max_steps(self):
         with patch.object(
             self.agent, "run_one_iteration", return_value="CONTINUE"
@@ -129,6 +160,32 @@ class TestBrowserAgent(unittest.TestCase):
             agent._generate_content_config.system_instruction,
             CONCISE_SYSTEM_INSTRUCTION,
         )
+
+    def test_handle_action_extract_text(self):
+        self.mock_browser_computer.extract_text.return_value = {"text": "hello"}
+        action = types.FunctionCall(name="extract_text", args={})
+
+        result = self.agent.handle_action(action, use_legacy_actions=False)
+
+        self.mock_browser_computer.extract_text.assert_called_once_with(None)
+        self.assertEqual(result, {"text": "hello"})
+
+    def test_save_to_file_writes_under_outputs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                result = save_to_file("foo.txt", "hello content")
+                self.assertIn("Saved to", result["result"])
+                with open(os.path.join("outputs", "foo.txt"), encoding="utf-8") as f:
+                    self.assertEqual(f.read(), "hello content")
+            finally:
+                os.chdir(original_cwd)
+
+    def test_save_to_file_rejects_traversal(self):
+        result = save_to_file("../outside.txt", "bad")
+        self.assertIn("error", result)
+        self.assertIn("escapes", result["error"])
 
 
 if __name__ == "__main__":

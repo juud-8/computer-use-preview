@@ -165,6 +165,10 @@ class Computer(abc.ABC):
         """Navigates directly to a specified URL."""
 
     @abc.abstractmethod
+    def extract_text(self, selector: str | None = None) -> dict:
+        """Return visible text from the page, optionally scoped to a CSS selector."""
+
+    @abc.abstractmethod
     def key_combination(self, keys: list[str]) -> EnvState:
         """Presses keyboard keys and combinations, such as "control+c" or "enter"."""
 
