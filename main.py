@@ -17,13 +17,7 @@ import sys
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
-from config import (
-    DEFAULT_INITIAL_URL,
-    DEFAULT_MODEL,
-    MAX_STEPS,
-    concise_mode,
-    verbose_reasoning,
-)
+from config import resolve_run_settings
 from agent import BrowserAgent
 from computers import BrowserbaseComputer, PlaywrightComputer
 from run_log import RunLogger, make_log_path, replay_log
@@ -114,54 +108,36 @@ def main() -> int:
             print(exc, file=sys.stderr)
             return 1
 
-    query = (
-        args.query
-        if hasattr(args, "query") and args.query is not None
-        else (skill_config.query if skill_config else None)
-    )
-    if not query:
-        parser.error("--query is required unless --replay or --skill is used.")
-
-    initial_url = (
-        args.initial_url
-        if hasattr(args, "initial_url")
-        else (
-            skill_config.initial_url
-            if skill_config and skill_config.initial_url
-            else DEFAULT_INITIAL_URL
+    try:
+        settings = resolve_run_settings(
+            cli_query=getattr(args, "query", None),
+            cli_initial_url=getattr(args, "initial_url", None),
+            cli_model=getattr(args, "model", None),
+            skill=skill_config,
         )
-    )
-    model = (
-        args.model
-        if hasattr(args, "model")
-        else (skill_config.model if skill_config and skill_config.model else DEFAULT_MODEL)
-    )
-    run_concise_mode = (
-        skill_config.concise_mode
-        if skill_config and skill_config.concise_mode is not None
-        else concise_mode()
-    )
+    except ValueError:
+        parser.error("--query is required unless --replay or --skill is used.")
 
     log_path = make_log_path()
     run_logger = RunLogger(log_path)
     run_logger.write_meta(
-        query=query,
-        initial_url=initial_url,
-        model=model,
-        concise_mode=run_concise_mode,
-        max_steps=MAX_STEPS,
+        query=settings.query,
+        initial_url=settings.initial_url,
+        model=settings.model,
+        concise_mode=settings.concise_mode,
+        max_steps=settings.max_steps,
     )
 
     if args.env == "playwright":
         env = PlaywrightComputer(
             screen_size=PLAYWRIGHT_SCREEN_SIZE,
-            initial_url=initial_url,
+            initial_url=settings.initial_url,
             highlight_mouse=args.highlight_mouse,
         )
     elif args.env == "browserbase":
         env = BrowserbaseComputer(
             screen_size=PLAYWRIGHT_SCREEN_SIZE,
-            initial_url=initial_url
+            initial_url=settings.initial_url
         )
     else:
         raise ValueError("Unknown environment: ", args.env)
@@ -169,13 +145,13 @@ def main() -> int:
     with env as browser_computer:
         agent = BrowserAgent(
             browser_computer=browser_computer,
-            query=query,
-            model_name=model,
-            verbose=verbose_reasoning(),
-            concise_mode=run_concise_mode,
+            query=settings.query,
+            model_name=settings.model,
+            verbose=settings.verbose,
+            concise_mode=settings.concise_mode,
             run_logger=run_logger,
         )
-        agent.agent_loop(max_steps=MAX_STEPS)
+        agent.agent_loop(max_steps=settings.max_steps)
     return 0
 
 

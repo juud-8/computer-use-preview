@@ -13,12 +13,13 @@
 # limitations under the License.
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from urls import github_to_raw_url
 
 SKILLS_FILENAME = "skills.yaml"
 URL_TEMPLATE = "{url}"
@@ -46,30 +47,6 @@ def load_skills(path: Path | None = None) -> dict[str, dict[str, Any]]:
     if not isinstance(data, dict):
         raise ValueError(f"{skills_file} must contain a mapping of skill names.")
     return data
-
-
-def github_to_raw_url(url: str) -> str:
-    """Rewrite a github.com blob/raw URL to raw.githubusercontent.com."""
-    if "raw.githubusercontent.com" in url:
-        return url
-
-    blob_match = re.match(
-        r"https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*)",
-        url,
-    )
-    if blob_match:
-        owner, repo, ref, path = blob_match.groups()
-        return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
-
-    raw_match = re.match(
-        r"https?://github\.com/([^/]+)/([^/]+)/raw/([^/]+)/(.*)",
-        url,
-    )
-    if raw_match:
-        owner, repo, ref, path = raw_match.groups()
-        return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
-
-    return url
 
 
 def apply_url_template(value: str | None, url_arg: str | None) -> str | None:
@@ -103,7 +80,7 @@ def resolve_skill(
         raise ValueError(f"Skill '{name}' is missing required field 'query'.")
 
     url_value = skill_arg
-    if name == "repo_summary" and url_value:
+    if raw.get("normalize_github_url") and url_value:
         url_value = github_to_raw_url(url_value)
 
     initial_url = apply_url_template(raw.get("initial_url"), url_value)

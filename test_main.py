@@ -20,6 +20,7 @@ from argparse import Namespace
 from contextlib import redirect_stdout
 from unittest.mock import patch, MagicMock
 
+import config
 import main
 from run_log import format_replay_line, replay_log
 
@@ -129,7 +130,7 @@ class TestMain(unittest.TestCase):
         mock_run_logger.write_meta.assert_called_once()
         mock_browser_agent.assert_called_once()
         mock_browser_agent.return_value.agent_loop.assert_called_once_with(
-            max_steps=main.MAX_STEPS,
+            max_steps=config.MAX_STEPS,
         )
 
     @patch("main.RunLogger")
@@ -164,7 +165,7 @@ class TestMain(unittest.TestCase):
         mock_run_logger.write_meta.assert_called_once()
         mock_browser_agent.assert_called_once()
         mock_browser_agent.return_value.agent_loop.assert_called_once_with(
-            max_steps=main.MAX_STEPS,
+            max_steps=config.MAX_STEPS,
         )
 
 

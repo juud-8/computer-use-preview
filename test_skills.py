@@ -50,6 +50,19 @@ class TestSkillsModule(unittest.TestCase):
         )
         self.assertTrue(config.concise_mode)
 
+    def test_skill_without_normalize_flag_keeps_url_verbatim(self):
+        github_url = "https://github.com/o/r/blob/main/a.py"
+        config = skills.resolve_skill(
+            "price_check",
+            skill_arg=github_url,
+            path=SKILLS_PATH,
+        )
+        self.assertEqual(config.initial_url, github_url)
+
+    def test_url_template_requires_skill_arg(self):
+        with self.assertRaises(ValueError):
+            skills.resolve_skill("repo_summary", path=SKILLS_PATH)
+
     def test_unknown_skill_raises_key_error_with_available_names(self):
         with self.assertRaises(KeyError) as ctx:
             skills.resolve_skill("does_not_exist", path=SKILLS_PATH)

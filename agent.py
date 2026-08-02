@@ -26,11 +26,12 @@ from google.genai.types import (
     FinishReason,
 )
 import time
+from contextlib import nullcontext
 from rich.console import Console
 from rich.table import Table
 
 from computers import EnvState, Computer
-from prompts import build_initial_user_message, get_system_instruction
+from prompts import build_initial_user_message
 from run_log import RunLogger
 
 MAX_RECENT_TURN_WITH_SCREENSHOTS = 3
@@ -80,6 +81,11 @@ PREDEFINED_COMPUTER_USE_FUNCTIONS = [
     "navigate",
     "go_forward",
 ]
+
+# Any predefined computer-use function returns an EnvState with a screenshot.
+SCREENSHOT_FUNCTION_NAMES = frozenset(
+    PREDEFINED_COMPUTER_USE_FUNCTIONS + LEGACY_PREDEFINED_COMPUTER_USE_FUNCTIONS
+)
 
 
 console = Console()
@@ -192,12 +198,6 @@ class BrowserAgent:
             ),
         ]
 
-        system_instruction = get_system_instruction(concise_mode)
-        print(
-            f"[debug] concise_mode={concise_mode} "
-            f"system_instruction={'CONCISE' if system_instruction else 'None'} "
-            f"delivery={'injected user message' if concise_mode else 'none'}"
-        )
         config_kwargs = {
             "temperature": 1,
             "top_p": 0.95,
@@ -219,222 +219,133 @@ class BrowserAgent:
         }
         self._generate_content_config = GenerateContentConfig(**config_kwargs)
 
+    def _status(self, message: str):
+        """Console spinner in verbose mode, no-op otherwise."""
+        if self._verbose:
+            return console.status(message, spinner_style=None)
+        return nullcontext()
+
+    def _denormalize_point(self, args: dict) -> tuple[int, int]:
+        return self.denormalize_x(args["x"]), self.denormalize_y(args["y"])
+
+    def _point_handler(self, method_name: str):
+        """Handler for actions that take a normalized (x, y) point."""
+
+        def handler(args: dict) -> FunctionResponseT:
+            x, y = self._denormalize_point(args)
+            return getattr(self._browser_computer, method_name)(x=x, y=y)
+
+        return handler
+
+    def _handle_scroll_at(self, args: dict) -> FunctionResponseT:
+        x, y = self._denormalize_point(args)
+        magnitude = args.get("magnitude", 800)
+        direction = args["direction"]
+        if direction in ("up", "down"):
+            magnitude = self.denormalize_y(magnitude)
+        elif direction in ("left", "right"):
+            magnitude = self.denormalize_x(magnitude)
+        else:
+            raise ValueError("Unknown direction: ", direction)
+        return self._browser_computer.scroll_at(
+            x=x, y=y, direction=direction, magnitude=magnitude
+        )
+
+    def _handle_drag_and_drop(self, args: dict) -> FunctionResponseT:
+        x, y = self._denormalize_point(args)
+        return self._browser_computer.drag_and_drop(
+            x=x,
+            y=y,
+            destination_x=self.denormalize_x(args["destination_x"]),
+            destination_y=self.denormalize_y(args["destination_y"]),
+        )
+
+    def _handle_type_text_at(self, args: dict) -> FunctionResponseT:
+        x, y = self._denormalize_point(args)
+        return self._browser_computer.type_text_at(
+            x=x,
+            y=y,
+            text=args["text"],
+            press_enter=args.get("press_enter", False),
+            clear_before_typing=args.get("clear_before_typing", True),
+        )
+
+    def _build_action_handlers(self, legacy: bool) -> dict:
+        """Build the action-name -> handler dispatch table."""
+        bc = self._browser_computer
+        # Shared across both model generations, plus the custom functions.
+        handlers = {
+            "open_web_browser": lambda args: bc.open_web_browser(),
+            "go_back": lambda args: bc.go_back(),
+            "go_forward": lambda args: bc.go_forward(),
+            "navigate": lambda args: bc.navigate(args["url"]),
+            "drag_and_drop": self._handle_drag_and_drop,
+            multiply_numbers.__name__: lambda args: multiply_numbers(
+                x=args["x"], y=args["y"]
+            ),
+            extract_text.__name__: lambda args: bc.extract_text(
+                args.get("selector")
+            ),
+            save_to_file.__name__: lambda args: save_to_file(
+                path=args["path"], content=args["content"]
+            ),
+        }
+        if legacy:
+            handlers.update(
+                {
+                    "click_at": self._point_handler("click_at"),
+                    "hover_at": self._point_handler("hover_at"),
+                    "type_text_at": self._handle_type_text_at,
+                    "scroll_document": lambda args: bc.scroll_document(
+                        args["direction"]
+                    ),
+                    "scroll_at": self._handle_scroll_at,
+                    "wait_5_seconds": lambda args: bc.wait_5_seconds(),
+                    "search": lambda args: bc.search(),
+                    "key_combination": lambda args: bc.key_combination(
+                        args["keys"].split("+")
+                    ),
+                }
+            )
+        else:
+            handlers.update(
+                {
+                    "click": self._point_handler("click_at"),
+                    "double_click": self._point_handler("double_click_at"),
+                    "triple_click": self._point_handler("triple_click_at"),
+                    "middle_click": self._point_handler("middle_click_at"),
+                    "right_click": self._point_handler("right_click_at"),
+                    "mouse_down": self._point_handler("mouse_down"),
+                    "mouse_up": self._point_handler("mouse_up"),
+                    "move": self._point_handler("hover_at"),
+                    "type": lambda args: bc.type_text(
+                        text=args["text"],
+                        press_enter=args.get("press_enter", False),
+                    ),
+                    "scroll": self._handle_scroll_at,
+                    "wait": lambda args: bc.wait(int(args.get("seconds", 1))),
+                    "hotkey": lambda args: bc.key_combination(args["keys"]),
+                    "press_key": lambda args: bc.press_key(args["key"]),
+                    "key_down": lambda args: bc.key_down(args["key"]),
+                    "key_up": lambda args: bc.key_up(args["key"]),
+                    "take_screenshot": lambda args: bc.take_screenshot(),
+                }
+            )
+        return handlers
+
     def handle_action(
         self, action: types.FunctionCall, use_legacy_actions: bool
     ) -> FunctionResponseT:
         """Handles the action and returns the environment state."""
-        if use_legacy_actions:
-            return self.handle_legacy_action(action)
-
-        if action.name == "open_web_browser":
-            return self._browser_computer.open_web_browser()
-        elif action.name == "click":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.click_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "double_click":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.double_click_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "triple_click":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.triple_click_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "middle_click":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.middle_click_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "right_click":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.right_click_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "mouse_down":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.mouse_down(
-                x=x,
-                y=y,
-            )
-        elif action.name == "mouse_up":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.mouse_up(
-                x=x,
-                y=y,
-            )
-        elif action.name == "move":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.hover_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "type":
-            press_enter = action.args.get("press_enter", False)
-            return self._browser_computer.type_text(
-                text=action.args["text"],
-                press_enter=press_enter,
-            )
-        elif action.name == "scroll":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            magnitude = action.args.get("magnitude", 800)
-            direction = action.args["direction"]
-
-            if direction in ("up", "down"):
-                magnitude = self.denormalize_y(magnitude)
-            elif direction in ("left", "right"):
-                magnitude = self.denormalize_x(magnitude)
-            else:
-                raise ValueError("Unknown direction: ", direction)
-            return self._browser_computer.scroll_at(
-                x=x, y=y, direction=direction, magnitude=magnitude
-            )
-        elif action.name == "wait":
-            wait_seconds = int(action.args.get("seconds", 1))
-            return self._browser_computer.wait(wait_seconds)
-        elif action.name == "go_back":
-            return self._browser_computer.go_back()
-        elif action.name == "go_forward":
-            return self._browser_computer.go_forward()
-        elif action.name == "navigate":
-            return self._browser_computer.navigate(action.args["url"])
-        elif action.name == "hotkey":
-            return self._browser_computer.key_combination(action.args["keys"])
-        elif action.name == "press_key":
-            return self._browser_computer.press_key(action.args["key"])
-        elif action.name == "key_down":
-            return self._browser_computer.key_down(action.args["key"])
-        elif action.name == "key_up":
-            return self._browser_computer.key_up(action.args["key"])
-        elif action.name == "take_screenshot":
-            return self._browser_computer.take_screenshot()
-        elif action.name == "drag_and_drop":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            destination_x = self.denormalize_x(action.args["destination_x"])
-            destination_y = self.denormalize_y(action.args["destination_y"])
-            return self._browser_computer.drag_and_drop(
-                x=x,
-                y=y,
-                destination_x=destination_x,
-                destination_y=destination_y,
-            )
-        # Handle the custom function declarations here.
-        elif action.name == multiply_numbers.__name__:
-            return multiply_numbers(x=action.args["x"], y=action.args["y"])
-        elif action.name == extract_text.__name__:
-            return self._browser_computer.extract_text(
-                action.args.get("selector")
-            )
-        elif action.name == save_to_file.__name__:
-            return save_to_file(
-                path=action.args["path"], content=action.args["content"]
-            )
-        else:
+        handlers = self._build_action_handlers(legacy=use_legacy_actions)
+        handler = handlers.get(action.name)
+        if handler is None:
             raise ValueError(f"Unsupported function: {action}")
+        return handler(action.args or {})
 
     def handle_legacy_action(self, action: types.FunctionCall) -> FunctionResponseT:
         """Handles the action defined in the legacy models, and returns the environment state."""
-        if action.name == "open_web_browser":
-            return self._browser_computer.open_web_browser()
-        elif action.name == "click_at":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.click_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "hover_at":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            return self._browser_computer.hover_at(
-                x=x,
-                y=y,
-            )
-        elif action.name == "type_text_at":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            press_enter = action.args.get("press_enter", False)
-            clear_before_typing = action.args.get("clear_before_typing", True)
-            return self._browser_computer.type_text_at(
-                x=x,
-                y=y,
-                text=action.args["text"],
-                press_enter=press_enter,
-                clear_before_typing=clear_before_typing,
-            )
-        elif action.name == "scroll_document":
-            return self._browser_computer.scroll_document(action.args["direction"])
-        elif action.name == "scroll_at":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            magnitude = action.args.get("magnitude", 800)
-            direction = action.args["direction"]
-
-            if direction in ("up", "down"):
-                magnitude = self.denormalize_y(magnitude)
-            elif direction in ("left", "right"):
-                magnitude = self.denormalize_x(magnitude)
-            else:
-                raise ValueError("Unknown direction: ", direction)
-            return self._browser_computer.scroll_at(
-                x=x, y=y, direction=direction, magnitude=magnitude
-            )
-        elif action.name == "wait_5_seconds":
-            return self._browser_computer.wait_5_seconds()
-
-        elif action.name == "go_back":
-            return self._browser_computer.go_back()
-        elif action.name == "go_forward":
-            return self._browser_computer.go_forward()
-        elif action.name == "search":
-            return self._browser_computer.search()
-        elif action.name == "navigate":
-            return self._browser_computer.navigate(action.args["url"])
-        elif action.name == "key_combination":
-            return self._browser_computer.key_combination(
-                action.args["keys"].split("+")
-            )
-        elif action.name == "drag_and_drop":
-            x = self.denormalize_x(action.args["x"])
-            y = self.denormalize_y(action.args["y"])
-            destination_x = self.denormalize_x(action.args["destination_x"])
-            destination_y = self.denormalize_y(action.args["destination_y"])
-            return self._browser_computer.drag_and_drop(
-                x=x,
-                y=y,
-                destination_x=destination_x,
-                destination_y=destination_y,
-            )
-        # Handle the custom function declarations here.
-        elif action.name == multiply_numbers.__name__:
-            return multiply_numbers(x=action.args["x"], y=action.args["y"])
-        elif action.name == extract_text.__name__:
-            return self._browser_computer.extract_text(
-                action.args.get("selector")
-            )
-        elif action.name == save_to_file.__name__:
-            return save_to_file(
-                path=action.args["path"], content=action.args["content"]
-            )
-        else:
-            raise ValueError(f"Unsupported function: {action}")
+        return self.handle_action(action, use_legacy_actions=True)
 
     def get_model_response(
         self, max_retries=5, base_delay_s=1
@@ -494,18 +405,10 @@ class BrowserAgent:
 
     def run_one_iteration(self) -> Literal["COMPLETE", "CONTINUE"]:
         # Generate a response from the model.
-        if self._verbose:
-            with console.status(
-                "Generating response from Gemini Computer Use...", spinner_style=None
-            ):
-                try:
-                    response = self.get_model_response()
-                except Exception as e:
-                    return "COMPLETE"
-        else:
+        with self._status("Generating response from Gemini Computer Use..."):
             try:
                 response = self.get_model_response()
-            except Exception as e:
+            except Exception:
                 return "COMPLETE"
 
         if not response.candidates:
@@ -577,14 +480,7 @@ class BrowserAgent:
                     return "COMPLETE"
                 # Explicitly mark the safety check as acknowledged.
                 extra_fr_fields["safety_acknowledgement"] = "true"
-            if self._verbose:
-                with console.status(
-                    "Sending command to Computer...", spinner_style=None
-                ):
-                    fc_result = self.handle_action(
-                        function_call, self._use_legacy_computer_use_function_call
-                    )
-            else:
+            with self._status("Sending command to Computer..."):
                 fc_result = self.handle_action(
                     function_call, self._use_legacy_computer_use_function_call
                 )
@@ -628,42 +524,40 @@ class BrowserAgent:
             )
         )
 
-        # only keep screenshots in the few most recent turns, remove the screenshot images from the old turns.
-        turn_with_screenshots_found = 0
-        for content in reversed(self._contents):
-            if content.role == "user" and content.parts:
-                # check if content has screenshot of the predefined computer use functions.
-                has_screenshot = False
-                for part in content.parts:
-                    if (
-                        part.function_response
-                        and part.function_response.parts
-                        and part.function_response.name
-                        in (PREDEFINED_COMPUTER_USE_FUNCTIONS + LEGACY_PREDEFINED_COMPUTER_USE_FUNCTIONS)
-                    ):
-                        has_screenshot = True
-                        break
-
-                if has_screenshot:
-                    turn_with_screenshots_found += 1
-                    # remove the screenshot image if the number of screenshots exceed the limit.
-                    if turn_with_screenshots_found > MAX_RECENT_TURN_WITH_SCREENSHOTS:
-                        for part in content.parts:
-                            if (
-                                part.function_response
-                                and part.function_response.parts
-                                and part.function_response.name
-                                in (PREDEFINED_COMPUTER_USE_FUNCTIONS + LEGACY_PREDEFINED_COMPUTER_USE_FUNCTIONS)
-                            ):
-                                part.function_response.parts = None
+        self._prune_old_screenshots()
 
         return "CONTINUE"
+
+    @staticmethod
+    def _screenshot_parts(content: Content) -> list[Part]:
+        """Parts of a user turn that carry a computer-use screenshot."""
+        if content.role != "user" or not content.parts:
+            return []
+        return [
+            part
+            for part in content.parts
+            if part.function_response
+            and part.function_response.parts
+            and part.function_response.name in SCREENSHOT_FUNCTION_NAMES
+        ]
+
+    def _prune_old_screenshots(self) -> None:
+        """Keep screenshots only in the most recent turns to bound context size."""
+        turns_with_screenshots = 0
+        for content in reversed(self._contents):
+            parts = self._screenshot_parts(content)
+            if not parts:
+                continue
+            turns_with_screenshots += 1
+            if turns_with_screenshots > MAX_RECENT_TURN_WITH_SCREENSHOTS:
+                for part in parts:
+                    part.function_response.parts = None
 
     def _get_safety_confirmation(
         self, safety: dict[str, Any]
     ) -> Literal["CONTINUE", "TERMINATE"]:
         if safety["decision"] != "require_confirmation":
-            raise ValueError(f"Unknown safety decision: safety['decision']")
+            raise ValueError(f"Unknown safety decision: {safety['decision']}")
         termcolor.cprint(
             "Safety service requires explicit confirmation!",
             color="yellow",

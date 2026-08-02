@@ -3,6 +3,7 @@ repo_summary:
   query: "Summarize how the main functions in this file work, based only on its contents."
   initial_url: "{url}"
   concise_mode: true
+  normalize_github_url: true
 
 competitor_scan:
   description: List today's top Product Hunt launches

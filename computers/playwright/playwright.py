@@ -25,6 +25,8 @@ import playwright.sync_api
 from playwright.sync_api import sync_playwright
 from typing import Literal
 
+from urls import github_to_raw_url
+
 # Define a mapping from the user-friendly key names to Playwright's expected key names.
 # Playwright is generally good with case-insensitivity for these, but it's best to be canonical.
 # See: https://playwright.dev/docs/api/class-keyboard#keyboard-press
@@ -87,17 +89,9 @@ def _truncate_text(text: str, max_chars: int = EXTRACT_TEXT_MAX_CHARS) -> str:
 
 
 def _github_blob_to_raw_url(url: str) -> str | None:
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-    if parsed.netloc not in ("github.com", "www.github.com"):
-        return None
-    parts = parsed.path.strip("/").split("/")
-    if len(parts) < 5 or parts[2] != "blob":
-        return None
-    user, repo, branch = parts[0], parts[1], parts[3]
-    file_path = "/".join(parts[4:])
-    return f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{file_path}"
+    """Return the raw.githubusercontent.com URL for a GitHub file page, or None."""
+    rewritten = github_to_raw_url(url)
+    return rewritten if rewritten != url else None
 
 
 class PlaywrightComputer(Computer):

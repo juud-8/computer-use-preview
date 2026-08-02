@@ -392,5 +392,227 @@ class TestBrowserAgent(unittest.TestCase):
         self.assertNotIn("screenshot", step)
 
 
+class TestActionDispatch(unittest.TestCase):
+    """Coverage for the table-driven action dispatch."""
+
+    def setUp(self):
+        os.environ["GEMINI_API_KEY"] = "test_api_key"
+        self.mock_browser_computer = MagicMock()
+        self.mock_browser_computer.screen_size.return_value = (1000, 1000)
+        self.agent = BrowserAgent(
+            browser_computer=self.mock_browser_computer,
+            query="test query",
+            model_name="test_model",
+        )
+        self.agent._client = MagicMock()
+
+    def test_every_modern_predefined_function_has_a_handler(self):
+        from agent import PREDEFINED_COMPUTER_USE_FUNCTIONS
+
+        handlers = self.agent._build_action_handlers(legacy=False)
+        missing = [n for n in PREDEFINED_COMPUTER_USE_FUNCTIONS if n not in handlers]
+        self.assertEqual(missing, [])
+
+    def test_every_legacy_predefined_function_has_a_handler(self):
+        from agent import LEGACY_PREDEFINED_COMPUTER_USE_FUNCTIONS
+
+        handlers = self.agent._build_action_handlers(legacy=True)
+        missing = [
+            n for n in LEGACY_PREDEFINED_COMPUTER_USE_FUNCTIONS if n not in handlers
+        ]
+        self.assertEqual(missing, [])
+
+    def test_custom_functions_available_in_both_modes(self):
+        for legacy in (False, True):
+            handlers = self.agent._build_action_handlers(legacy=legacy)
+            for name in ("multiply_numbers", "extract_text", "save_to_file"):
+                self.assertIn(name, handlers, f"legacy={legacy}")
+
+    def test_modern_click_denormalizes(self):
+        action = types.FunctionCall(name="click", args={"x": 500, "y": 250})
+        self.agent.handle_action(action, use_legacy_actions=False)
+        self.mock_browser_computer.click_at.assert_called_once_with(x=500, y=250)
+
+    def test_modern_double_click(self):
+        action = types.FunctionCall(name="double_click", args={"x": 100, "y": 100})
+        self.agent.handle_action(action, use_legacy_actions=False)
+        self.mock_browser_computer.double_click_at.assert_called_once_with(
+            x=100, y=100
+        )
+
+    def test_modern_type_defaults_press_enter_false(self):
+        action = types.FunctionCall(name="type", args={"text": "hi"})
+        self.agent.handle_action(action, use_legacy_actions=False)
+        self.mock_browser_computer.type_text.assert_called_once_with(
+            text="hi", press_enter=False
+        )
+
+    def test_modern_scroll_down_denormalizes_magnitude(self):
+        action = types.FunctionCall(
+            name="scroll", args={"x": 500, "y": 500, "direction": "down"}
+        )
+        self.agent.handle_action(action, use_legacy_actions=False)
+        self.mock_browser_computer.scroll_at.assert_called_once_with(
+            x=500, y=500, direction="down", magnitude=800
+        )
+
+    def test_scroll_unknown_direction_raises(self):
+        action = types.FunctionCall(
+            name="scroll", args={"x": 0, "y": 0, "direction": "diagonal"}
+        )
+        with self.assertRaises(ValueError):
+            self.agent.handle_action(action, use_legacy_actions=False)
+
+    def test_modern_wait_casts_seconds_to_int(self):
+        action = types.FunctionCall(name="wait", args={"seconds": 2.0})
+        self.agent.handle_action(action, use_legacy_actions=False)
+        self.mock_browser_computer.wait.assert_called_once_with(2)
+
+    def test_modern_hotkey_passes_keys_list(self):
+        action = types.FunctionCall(name="hotkey", args={"keys": ["Control", "a"]})
+        self.agent.handle_action(action, use_legacy_actions=False)
+        self.mock_browser_computer.key_combination.assert_called_once_with(
+            ["Control", "a"]
+        )
+
+    def test_legacy_key_combination_splits_on_plus(self):
+        action = types.FunctionCall(name="key_combination", args={"keys": "ctrl+a"})
+        self.agent.handle_action(action, use_legacy_actions=True)
+        self.mock_browser_computer.key_combination.assert_called_once_with(
+            ["ctrl", "a"]
+        )
+
+    def test_drag_and_drop_denormalizes_all_points(self):
+        action = types.FunctionCall(
+            name="drag_and_drop",
+            args={"x": 100, "y": 200, "destination_x": 300, "destination_y": 400},
+        )
+        self.agent.handle_action(action, use_legacy_actions=False)
+        self.mock_browser_computer.drag_and_drop.assert_called_once_with(
+            x=100, y=200, destination_x=300, destination_y=400
+        )
+
+    def test_modern_unknown_function_raises(self):
+        action = types.FunctionCall(name="nope", args={})
+        with self.assertRaises(ValueError):
+            self.agent.handle_action(action, use_legacy_actions=False)
+
+    def test_handle_legacy_action_delegates(self):
+        action = types.FunctionCall(name="click_at", args={"x": 10, "y": 20})
+        self.agent.handle_legacy_action(action)
+        self.mock_browser_computer.click_at.assert_called_once_with(x=10, y=20)
+
+
+class TestSafetyConfirmation(unittest.TestCase):
+    def setUp(self):
+        os.environ["GEMINI_API_KEY"] = "test_api_key"
+        mock_computer = MagicMock()
+        mock_computer.screen_size.return_value = (1000, 1000)
+        self.agent = BrowserAgent(
+            browser_computer=mock_computer,
+            query="q",
+            model_name="m",
+        )
+        self.agent._client = MagicMock()
+
+    def _safety(self):
+        return {"decision": "require_confirmation", "explanation": "why"}
+
+    @patch("builtins.input", return_value="yes")
+    def test_yes_continues(self, _mock_input):
+        self.assertEqual(self.agent._get_safety_confirmation(self._safety()), "CONTINUE")
+
+    @patch("builtins.input", return_value="no")
+    def test_no_terminates(self, _mock_input):
+        self.assertEqual(
+            self.agent._get_safety_confirmation(self._safety()), "TERMINATE"
+        )
+
+    def test_unknown_decision_raises_with_decision_in_message(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.agent._get_safety_confirmation(
+                {"decision": "weird_value", "explanation": "x"}
+            )
+        self.assertIn("weird_value", str(ctx.exception))
+
+
+class TestScreenshotPruning(unittest.TestCase):
+    def setUp(self):
+        os.environ["GEMINI_API_KEY"] = "test_api_key"
+        mock_computer = MagicMock()
+        mock_computer.screen_size.return_value = (1000, 1000)
+        self.agent = BrowserAgent(
+            browser_computer=mock_computer,
+            query="q",
+            model_name="m",
+        )
+        self.agent._client = MagicMock()
+
+    @staticmethod
+    def _screenshot_turn():
+        from google.genai.types import Content, FunctionResponse, Part
+        from google.genai import types as gtypes
+
+        return Content(
+            role="user",
+            parts=[
+                Part(
+                    function_response=FunctionResponse(
+                        name="click",
+                        response={"url": "https://x.com"},
+                        parts=[
+                            gtypes.FunctionResponsePart(
+                                inline_data=gtypes.FunctionResponseBlob(
+                                    mime_type="image/png", data=b"png"
+                                )
+                            )
+                        ],
+                    )
+                )
+            ],
+        )
+
+    def test_keeps_only_most_recent_screenshots(self):
+        from agent import MAX_RECENT_TURN_WITH_SCREENSHOTS
+
+        total_turns = MAX_RECENT_TURN_WITH_SCREENSHOTS + 3
+        self.agent._contents.extend(
+            self._screenshot_turn() for _ in range(total_turns)
+        )
+        self.agent._prune_old_screenshots()
+
+        turns = self.agent._contents[1:]  # skip the initial query turn
+        with_screenshot = [
+            t for t in turns if t.parts[0].function_response.parts is not None
+        ]
+        without = [t for t in turns if t.parts[0].function_response.parts is None]
+        self.assertEqual(len(with_screenshot), MAX_RECENT_TURN_WITH_SCREENSHOTS)
+        self.assertEqual(len(without), 3)
+        # The retained screenshots must be the most recent turns.
+        self.assertTrue(
+            all(t.parts[0].function_response.parts is None for t in turns[:3])
+        )
+
+    def test_custom_function_responses_are_never_pruned(self):
+        from google.genai.types import Content, FunctionResponse, Part
+
+        turn = Content(
+            role="user",
+            parts=[
+                Part(
+                    function_response=FunctionResponse(
+                        name="extract_text", response={"text": "hi"}
+                    )
+                )
+            ],
+        )
+        self.agent._contents.append(turn)
+        self.agent._prune_old_screenshots()
+        self.assertEqual(
+            self.agent._contents[-1].parts[0].function_response.response,
+            {"text": "hi"},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

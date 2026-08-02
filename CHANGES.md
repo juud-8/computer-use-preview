@@ -155,3 +155,52 @@ CONCISE_MODE=true
 - Concise mode is delivered via injected user message because computer-use
   models ignore `system_instruction`; if a future SDK changes this, revisit
   `prompts.py`.
+
+---
+
+## Architecture pass (2026-07-06)
+
+**Test suite: 54 → 93 tests, all passing.**
+
+### Mode/settings consolidation
+- `config.py` now owns run-configuration end to end: a frozen `RunSettings`
+  dataclass plus `resolve_run_settings()` encoding the CLI > skill > env
+  precedence in one tested function. `main.py`'s `hasattr`-based resolution
+  logic was deleted in favor of it. Boolean env parsing is deduplicated into
+  `_env_bool`.
+
+### Agent refactor (`agent.py`)
+- The two ~100-line duplicated `elif` action-dispatch chains (modern + legacy)
+  were replaced by a table-driven dispatch (`_build_action_handlers`), with a
+  shared handler set for actions common to both model generations and the
+  custom functions. `handle_legacy_action` is now a thin delegate.
+- Fixed a broken f-string in `_get_safety_confirmation` (the error message
+  printed the literal text `safety['decision']` instead of the value).
+- Removed the leftover `[debug] concise_mode=...` startup print.
+- Screenshot pruning extracted to `_prune_old_screenshots` using a precomputed
+  `SCREENSHOT_FUNCTION_NAMES` frozenset (previously the two function lists were
+  concatenated on every part of every turn, every iteration).
+- Verbose/non-verbose duplication around console status spinners collapsed
+  into a `_status()` helper (nullcontext when not verbose).
+
+### GitHub URL rewriting consolidated (`urls.py`)
+- There were two divergent implementations (regex in `skills.py`, urlparse in
+  `computers/playwright/playwright.py` — the latter didn't handle `/raw/`
+  URLs). Both now delegate to a single `urls.github_to_raw_url`.
+- The hardcoded `if name == "repo_summary"` special case in `skills.py` is
+  replaced by a declarative `normalize_github_url: true` flag in `skills.yaml`,
+  so any skill can opt in.
+
+### New tests
+- `test_config.py`: env-bool parsing, full RunSettings precedence matrix
+  (CLI over skill, skill over env, skill `concise_mode: false` beating env
+  true, frozen dataclass).
+- `test_urls.py`: blob/raw/www forms, idempotency, non-GitHub passthrough.
+- `test_agent.py`: dispatch-table completeness against both predefined
+  function lists (a new predefined action without a handler now fails CI),
+  modern-action handlers (click/type/scroll/wait/hotkey/drag), legacy
+  key_combination splitting, safety confirmation yes/no/unknown-decision,
+  and screenshot pruning (keeps only the N most recent, never touches custom
+  function responses).
+- `test_skills.py`: non-flagged skills keep URLs verbatim; `{url}` template
+  without `--skill-arg` raises.
